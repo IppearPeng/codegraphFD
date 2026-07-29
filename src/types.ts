@@ -103,6 +103,7 @@ export const LANGUAGES = [
   'luau',
   'objc',
   'r',
+  'fortran',
   'solidity',
   'nix',
   'yaml',

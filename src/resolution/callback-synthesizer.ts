@@ -805,6 +805,70 @@ async function cppOverrideEdges(queries: QueryBuilder, onYield: MaybeYield): Pro
 }
 
 /**
+ * Phase 4d: Fortran type-bound dispatch. A call through a polymorphic
+ * `CLASS(base_t)` receiver dispatches at runtime to an extending type's
+ * overriding binding. Bridge each base method to same-named subtype methods;
+ * names compare case-insensitively, as required by Fortran.
+ */
+async function fortranOverrideEdges(
+  queries: QueryBuilder,
+  onYield: MaybeYield
+): Promise<Edge[]> {
+  let scanned = 0;
+  const edges: Edge[] = [];
+  const seen = new Set<string>();
+  const methodsMemo = new Map<string, Node[]>();
+  const methodsOf = (typeId: string): Node[] => {
+    const cached = methodsMemo.get(typeId);
+    if (cached) return cached;
+    const methods = queries
+      .getOutgoingEdges(typeId, ['contains'])
+      .map((edge) => queries.getNodeById(edge.target))
+      .filter((node): node is Node => !!node && node.kind === 'method');
+    methodsMemo.set(typeId, methods);
+    return methods;
+  };
+
+  for (const subtype of queries.iterateNodesByKind('struct')) {
+    if ((++scanned & 63) === 0) await onYield();
+    if (subtype.language !== 'fortran') continue;
+    const subtypeMethods = methodsOf(subtype.id);
+    if (subtypeMethods.length === 0) continue;
+
+    for (const relation of queries.getOutgoingEdges(subtype.id, ['extends'])) {
+      const base = queries.getNodeById(relation.target);
+      if (!base || base.language !== 'fortran' || base.id === subtype.id) continue;
+      const baseMethods = new Map(
+        methodsOf(base.id).map((method) => [method.name.toLowerCase(), method])
+      );
+      let added = 0;
+      for (const method of subtypeMethods) {
+        if (added >= MAX_CALLBACKS_PER_CHANNEL) break;
+        const baseMethod = baseMethods.get(method.name.toLowerCase());
+        if (!baseMethod || baseMethod.id === method.id) continue;
+        const key = `${baseMethod.id}>${method.id}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        edges.push({
+          source: baseMethod.id,
+          target: method.id,
+          kind: 'calls',
+          line: baseMethod.startLine,
+          provenance: 'heuristic',
+          metadata: {
+            synthesizedBy: 'fortran-override',
+            via: method.name,
+            registeredAt: `${method.filePath}:${method.startLine}`,
+          },
+        });
+        added++;
+      }
+    }
+  }
+  return edges;
+}
+
+/**
  * Phase 5.5: interface / abstract dispatch (Java, Kotlin). A call through an
  * injected interface (`@Autowired FooService svc; svc.list()`) or an abstract
  * base dispatches at runtime to the implementing class's override — a vtable
@@ -3542,6 +3606,7 @@ export const SYNTH_PASSES: SynthPassDef[] = [
   { name: 'arkuiEmitter', gate: (has) => has('arkts'), run: (_q, c, y) => arkuiEmitterEdges(c, y) },
   { name: 'arkuiRoutes', gate: (has) => has('arkts'), run: (_q, c, y) => arkuiRouterEdges(c, y) },
   { name: 'cppEdges', gate: (has) => has('cpp'), run: (q, _c, y) => cppOverrideEdges(q, y) },
+  { name: 'fortranEdges', gate: (has) => has('fortran'), run: (q, _c, y) => fortranOverrideEdges(q, y) },
   {
     name: 'ifaceEdges',
     gate: (has) => has('java', 'kotlin', 'csharp', 'swift', 'scala', 'go', 'rust', 'arkts', ...JS_FAMILY),
