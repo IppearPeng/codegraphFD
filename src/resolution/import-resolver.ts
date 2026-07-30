@@ -45,6 +45,7 @@ const EXTENSION_RESOLUTION: Record<string, string[]> = {
   php: ['.php'],
   ruby: ['.rb'],
   objc: ['.h', '.m', '.mm'],
+  d: ['.d', '.di', '/package.d', '/package.di'],
   nix: ['.nix', '/default.nix'],
 };
 
@@ -143,6 +144,12 @@ function resolveImportPathUncached(
     return resolveCobolCopybook(importPath, fromFile, context);
   }
 
+  // D imports are language module names (`app.services.user`), not npm-style
+  // external packages. Resolve them before the generic bare-package filter.
+  if (language === 'd') {
+    return resolveDModule(importPath, fromFile, context);
+  }
+
   // Skip external/npm packages — but pass the context so the
   // bare-specifier heuristic can consult the project's tsconfig
   // alias map first (custom prefixes like `@components/*` would
@@ -170,6 +177,54 @@ function resolveImportPathUncached(
     return resolveCppIncludePath(importPath, language, context);
   }
 
+  return null;
+}
+
+/**
+ * Resolve a D dotted module name to its implementation/interface file.
+ *
+ * DUB conventionally places code under source/ or src/, but sourcePaths is
+ * configurable. Exact/common-root candidates are tried first; the suffix scan
+ * then covers custom source roots while retaining deterministic preference for
+ * the shortest path nearest the importing file.
+ */
+function resolveDModule(
+  importPath: string,
+  fromFile: string,
+  context: ResolutionContext
+): string | null {
+  const moduleName = importPath.trim();
+  if (!/^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*$/.test(moduleName)) return null;
+  const modulePath = moduleName.replace(/\./g, '/');
+  const endings = [
+    `${modulePath}.d`,
+    `${modulePath}.di`,
+    `${modulePath}/package.d`,
+    `${modulePath}/package.di`,
+  ];
+
+  // Prefer implementations over interfaces and module files over package
+  // modules regardless of which conventional source root contains them.
+  for (const ending of endings) {
+    for (const prefix of ['', 'source/', 'src/']) {
+      const candidate = prefix + ending;
+      if (context.fileExists(candidate)) return candidate;
+    }
+  }
+
+  const fromTop = fromFile.split('/')[0] ?? '';
+  for (const ending of endings) {
+    const suffix = `/${ending}`;
+    const matches = context.getAllFiles().filter(
+      (file) => file === ending || file.endsWith(suffix)
+    );
+    matches.sort((a, b) => {
+      const aSameRoot = a.split('/')[0] === fromTop ? 0 : 1;
+      const bSameRoot = b.split('/')[0] === fromTop ? 0 : 1;
+      return aSameRoot - bSameRoot || a.length - b.length || a.localeCompare(b);
+    });
+    if (matches[0]) return matches[0];
+  }
   return null;
 }
 
@@ -781,12 +836,65 @@ export function extractImportMappings(
     mappings.push(...extractPythonImports(content));
   } else if (language === 'go') {
     mappings.push(...extractGoImports(content));
+  } else if (language === 'd') {
+    mappings.push(...extractDImports(content));
   } else if (language === 'java' || language === 'kotlin') {
     mappings.push(...extractJavaImports(content));
   } else if (language === 'php') {
     mappings.push(...extractPHPImports(content));
   } else if (language === 'c' || language === 'cpp') {
     mappings.push(...extractCppImports(content));
+  }
+
+  return mappings;
+}
+
+/** Extract module, alias, and selective import bindings from D source. */
+function extractDImports(content: string): ImportMapping[] {
+  const mappings: ImportMapping[] = [];
+  const importRegex = /\bimport\s+([^;]+);/g;
+  let match: RegExpExecArray | null;
+
+  while ((match = importRegex.exec(content)) !== null) {
+    const clause = match[1]!.trim();
+    const colon = clause.indexOf(':');
+    const modulesPart = (colon >= 0 ? clause.slice(0, colon) : clause).trim();
+    const bindsPart = colon >= 0 ? clause.slice(colon + 1).trim() : '';
+    const modules: Array<{ source: string; localName: string }> = [];
+
+    for (const rawModule of modulesPart.split(',')) {
+      const moduleMatch = rawModule
+        .trim()
+        .match(/^(?:([A-Za-z_]\w*)\s*=\s*)?([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)$/);
+      if (!moduleMatch) continue;
+      const source = moduleMatch[2]!;
+      const localName = moduleMatch[1] ?? source.split('.').pop()!;
+      modules.push({ source, localName });
+      mappings.push({
+        localName,
+        exportedName: '*',
+        source,
+        isDefault: false,
+        isNamespace: true,
+      });
+    }
+
+    const selectiveSource = modules[modules.length - 1]?.source;
+    if (!selectiveSource || !bindsPart) continue;
+    for (const rawBind of bindsPart.split(',')) {
+      const bindMatch = rawBind
+        .trim()
+        .match(/^(?:([A-Za-z_]\w*)\s*=\s*)?([A-Za-z_]\w*)$/);
+      if (!bindMatch) continue;
+      const exportedName = bindMatch[2]!;
+      mappings.push({
+        localName: bindMatch[1] ?? exportedName,
+        exportedName,
+        source: selectiveSource,
+        isDefault: false,
+        isNamespace: false,
+      });
+    }
   }
 
   return mappings;
@@ -1308,6 +1416,28 @@ export function resolveViaImport(
   ref: UnresolvedRef,
   context: ResolutionContext
 ): ResolvedRef | null {
+  // D module imports are direct dependencies on the module file. The extractor
+  // preserves the full dotted name on `imports` refs; selective/alias symbol
+  // uses fall through to ImportMapping-based resolution below.
+  if (ref.language === 'd' && ref.referenceKind === 'imports') {
+    const resolvedPath = resolveImportPath(
+      ref.referenceName,
+      ref.filePath,
+      ref.language,
+      context
+    );
+    if (!resolvedPath) return null;
+    const fileNode = context.getNodesInFile(resolvedPath).find((node) => node.kind === 'file');
+    return fileNode
+      ? {
+          original: ref,
+          targetNodeId: fileNode.id,
+          confidence: 0.9,
+          resolvedBy: 'import',
+        }
+      : null;
+  }
+
   // C/C++ #include references — resolve directly to the included file
   // (file→file edge), bypassing symbol lookup. The extractor emits these
   // with `referenceKind: 'imports'` and `referenceName: <include path>`

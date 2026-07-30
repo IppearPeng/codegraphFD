@@ -887,7 +887,7 @@ async function fortranOverrideEdges(
 // and are added below; their concrete-side nodes can be a `struct` (Swift)
 // or an `object` (Scala) so the loop also iterates those kinds.
 const IFACE_OVERRIDE_LANGS = new Set([
-  'java', 'kotlin', 'csharp', 'typescript', 'javascript', 'swift', 'scala', 'go', 'rust',
+  'java', 'kotlin', 'csharp', 'typescript', 'javascript', 'swift', 'scala', 'go', 'rust', 'd',
   'arkts',
 ]);
 /**

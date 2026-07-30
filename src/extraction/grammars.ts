@@ -33,6 +33,7 @@ const WASM_GRAMMAR_FILES: Record<GrammarLanguage, string> = {
   ruby: 'tree-sitter-ruby.wasm',
   swift: 'tree-sitter-swift.wasm',
   kotlin: 'tree-sitter-kotlin.wasm',
+  d: 'tree-sitter-d.wasm',
   dart: 'tree-sitter-dart.wasm',
   pascal: 'tree-sitter-pascal.wasm',
   scala: 'tree-sitter-scala.wasm',
@@ -106,6 +107,9 @@ export const EXTENSION_MAP: Record<string, Language> = {
   '.swift': 'swift',
   '.kt': 'kotlin',
   '.kts': 'kotlin',
+  // D source and compiler-generated interface files.
+  '.d': 'd',
+  '.di': 'd',
   '.dart': 'dart',
   '.liquid': 'liquid',
   '.svelte': 'svelte',
@@ -303,7 +307,7 @@ export async function initGrammars(): Promise<void> {
  */
 const VENDORED_WASM_LANGS: ReadonlySet<GrammarLanguage> = new Set([
   'pascal', 'scala', 'lua', 'luau', 'csharp', 'r', 'cfml', 'cfscript', 'cfquery',
-  'cobol', 'vbnet', 'erlang', 'terraform', 'arkts', 'nix', 'fortran',
+  'cobol', 'vbnet', 'erlang', 'terraform', 'arkts', 'nix', 'fortran', 'd',
   'typescript', 'tsx', 'javascript', 'jsx', 'java', 'python', 'go',
   // R7a (C/C++ kernel port prep): tree-sitter-c v0.24.2 (b780e47) +
   // tree-sitter-cpp v0.23.4 (f41e1a0), parser.c/scanner.c sha-matched against
@@ -644,6 +648,7 @@ export function getLanguageDisplayName(language: Language): string {
     ruby: 'Ruby',
     swift: 'Swift',
     kotlin: 'Kotlin',
+    d: 'D',
     dart: 'Dart',
     svelte: 'Svelte',
     vue: 'Vue',

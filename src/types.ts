@@ -92,6 +92,7 @@ export const LANGUAGES = [
   'ruby',
   'swift',
   'kotlin',
+  'd',
   'dart',
   'svelte',
   'vue',

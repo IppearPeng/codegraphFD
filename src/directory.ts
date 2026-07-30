@@ -180,7 +180,7 @@ export function findNearestCodeGraphRoot(startPath: string): string | null {
 const SUBPROJECT_SCAN_SKIP = new Set([
   'node_modules', '.git', '.svn', '.hg', 'dist', 'build', 'out', 'target',
   'vendor', 'bin', 'obj', '.next', '.nuxt', '.svelte-kit', '.cache', 'coverage',
-  '.venv', 'venv', '__pycache__', '.turbo', '.idea', '.vscode', 'tmp', 'temp',
+  '.venv', 'venv', '__pycache__', '.turbo', '.idea', '.vscode', '.dub', 'tmp', 'temp',
 ]);
 
 /** Manifests that mark a directory as a project/workspace root. The down-scan
@@ -190,6 +190,7 @@ const WORKSPACE_ROOT_MANIFESTS = [
   'package.json', 'pnpm-workspace.yaml', 'lerna.json', 'nx.json', 'turbo.json',
   'go.work', 'go.mod', 'Cargo.toml', 'pom.xml', 'build.gradle', 'build.gradle.kts',
   'settings.gradle', 'pyproject.toml', 'composer.json', 'Gemfile', 'rush.json',
+  'dub.json', 'dub.sdl',
   'WORKSPACE', 'WORKSPACE.bazel',
 ];
 
