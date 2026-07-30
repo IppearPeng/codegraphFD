@@ -22,6 +22,7 @@ import { isGeneratedFile } from './generated-detection';
 import type { LanguageExtractor, ExtractorContext } from './tree-sitter-types';
 import { EXTRACTORS } from './languages';
 import { stripCppTemplateArgs } from './languages/c-cpp';
+import { D_BUILTIN_TYPES } from './languages/d';
 import { LiquidExtractor } from './liquid-extractor';
 import { RazorExtractor } from './razor-extractor';
 import { SvelteExtractor } from './svelte-extractor';
@@ -1872,7 +1873,8 @@ export class TreeSitterExtractor {
     // Skip forward declarations and type references (no body = not a definition)
     // — EXCEPT C# positional records (`record struct M(decimal Amount);`),
     // complete definitions with no body block. (#831)
-    const body = getChildByField(node, this.extractor.bodyField);
+    const body = this.extractor.resolveBody?.(node, this.extractor.bodyField)
+      ?? getChildByField(node, this.extractor.bodyField);
     if (!body && node.type !== 'record_declaration') return;
 
     const name = extractName(node, this.source, this.extractor);
@@ -2049,6 +2051,28 @@ export class TreeSitterExtractor {
     const docstring = getPrecedingDocstring(node, this.source);
     const visibility = this.extractor.getVisibility?.(node);
     const isStatic = this.extractor.isStatic?.(node) ?? false;
+
+    // D's grammar names field declarators `declarator` rather than the
+    // Java/C#-style `variable_declarator`. Reuse the language hook so multiple
+    // declarations (`int x, y;`) and manifest constants (`enum LIMIT = 10;`)
+    // retain their real names and kinds.
+    if (this.language === 'd' && this.extractor.extractVariables) {
+      for (const info of this.extractor.extractVariables(node, this.source)) {
+        const fieldNode = this.createNode(
+          info.kind === 'constant' ? 'constant' : 'field',
+          info.name,
+          info.positionNode ?? node,
+          {
+            docstring,
+            signature: info.signature,
+            visibility,
+            isStatic,
+          }
+        );
+        if (fieldNode) this.extractTypeAnnotations(node, fieldNode.id);
+      }
+      return;
+    }
 
     // A class field that is actually a CONSTANT (Java `static final`, C# `const`
     // / `static readonly`) is extracted as `constant` kind, not `field`, so
@@ -2548,6 +2572,34 @@ export class TreeSitterExtractor {
     const docstring = getPrecedingDocstring(node, this.source);
     const isExported = this.extractor.isExported?.(node, this.source) ?? false;
 
+    // Language hook for declaration shapes that do not use the common
+    // variable_declarator/name fields. D is the first consumer.
+    if (this.extractor.extractVariables) {
+      let firstCreated: Node | null = null;
+      for (const info of this.extractor.extractVariables(node, this.source)) {
+        const created = this.createNode(
+          info.kind,
+          info.name,
+          info.positionNode ?? node,
+          {
+            docstring,
+            signature: info.signature,
+            isExported,
+          }
+        );
+        if (created) {
+          firstCreated ??= created;
+          this.extractTypeAnnotations(node, created.id);
+        }
+      }
+      // Attribute calls in a file/module-level initializer to the declared
+      // symbol. Walking once avoids duplicate refs for multi-declarators.
+      if (firstCreated) this.nodeStack.push(firstCreated.id);
+      this.visitFunctionBody(node, firstCreated?.id ?? '');
+      if (firstCreated) this.nodeStack.pop();
+      return;
+    }
+
     // Extract variable declarators based on language
     if (this.language === 'typescript' || this.language === 'javascript' ||
         this.language === 'tsx' || this.language === 'jsx' || this.language === 'cfscript' ||
@@ -2970,7 +3022,9 @@ export class TreeSitterExtractor {
     });
 
     // Extract type references from the alias value (e.g., `type X = ITextModel | null`)
-    if (typeAliasNode && this.TYPE_ANNOTATION_LANGUAGES.has(this.language)) {
+    if (typeAliasNode && this.language === 'd') {
+      this.extractDTypeRefs(node, typeAliasNode.id);
+    } else if (typeAliasNode && this.TYPE_ANNOTATION_LANGUAGES.has(this.language)) {
       // The value is everything after the `=`, which is typically the last named child
       // In tree-sitter TS: type_alias_declaration has name + value children
       const value = getChildByField(node, 'value');
@@ -3686,6 +3740,17 @@ export class TreeSitterExtractor {
 
     const callerId = this.nodeStack[this.nodeStack.length - 1];
     if (!callerId) return;
+
+    // tree-sitter-d wraps `new Foo(args)` as
+    // call_expression(new_expression(type(Foo)), named_arguments). The normal
+    // child walk visits the nested new_expression and emits the construction
+    // reference, so only suppress the wrapper's bogus `calls: new Foo` edge.
+    if (this.language === 'd' && node.type === 'call_expression') {
+      const callee = node.namedChild(0);
+      if (callee?.type === 'new_expression') {
+        return;
+      }
+    }
 
     // VB.NET: `foo(args)` is syntactically ambiguous between a call and an
     // index read, so the grammar parses non-empty parens as
@@ -4651,6 +4716,27 @@ export class TreeSitterExtractor {
     const fromId = this.nodeStack[this.nodeStack.length - 1];
     if (!fromId) return;
 
+    if (this.language === 'd' && node.type === 'new_expression') {
+      const typeNode = node.namedChildren.find((child: SyntaxNode) => child.type === 'type');
+      if (!typeNode) return;
+      const identifiers: SyntaxNode[] = [];
+      const collect = (current: SyntaxNode): void => {
+        if (current.type === 'identifier') identifiers.push(current);
+        for (const child of current.namedChildren) collect(child);
+      };
+      collect(typeNode);
+      const nameNode = identifiers[identifiers.length - 1];
+      if (!nameNode) return;
+      this.unresolvedReferences.push({
+        fromNodeId: fromId,
+        referenceName: getNodeText(nameNode, this.source),
+        referenceKind: 'instantiates',
+        line: nameNode.startPosition.row + 1,
+        column: nameNode.startPosition.column,
+      });
+      return;
+    }
+
     // The class name is in the `constructor`/`type`/first-named-child
     // depending on grammar.
     const ctor =
@@ -5369,6 +5455,25 @@ export class TreeSitterExtractor {
       const child = node.namedChild(i);
       if (!child) continue;
 
+      // D combines base classes and interfaces in direct `base_class`
+      // children. Emit all conservatively as extends; createEdges promotes the
+      // edge to implements when the resolved target is an interface.
+      if (this.language === 'd' && child.type === 'base_class') {
+        let name = getNodeText(child, this.source).trim();
+        name = name.replace(/!\s*(?:\([^)]*\)|[A-Za-z_]\w*)/g, '');
+        const last = name.split('.').filter(Boolean).pop();
+        if (last) {
+          this.unresolvedReferences.push({
+            fromNodeId: classId,
+            referenceName: last,
+            referenceKind: 'extends',
+            line: child.startPosition.row + 1,
+            column: child.startPosition.column,
+          });
+        }
+        continue;
+      }
+
       if (
         child.type === 'extends_clause' ||
         child.type === 'superclass' ||
@@ -5789,7 +5894,7 @@ export class TreeSitterExtractor {
    * Languages that support type annotations (TypeScript, etc.)
    */
   private readonly TYPE_ANNOTATION_LANGUAGES = new Set([
-    'typescript', 'tsx', 'arkts', 'dart', 'kotlin', 'swift', 'rust', 'go', 'java', 'csharp', 'scala', 'php',
+    'typescript', 'tsx', 'arkts', 'd', 'dart', 'kotlin', 'swift', 'rust', 'go', 'java', 'csharp', 'scala', 'php',
   ]);
 
   /**
@@ -5847,6 +5952,11 @@ export class TreeSitterExtractor {
     // recorded and a `variable_name` like `$events` never mis-emits as a ref.
     if (this.language === 'php') {
       this.extractPhpTypeRefs(node, nodeId);
+      return;
+    }
+
+    if (this.language === 'd') {
+      this.extractDTypeRefs(node, nodeId);
       return;
     }
 
@@ -5915,6 +6025,59 @@ export class TreeSitterExtractor {
     if (typeAnnotation) {
       this.extractTypeRefsFromSubtree(typeAnnotation, nodeId);
     }
+  }
+
+  /**
+   * D type positions are `type` subtrees whose leaves are plain `identifier`
+   * nodes (not `type_identifier`). Walk declaration headers only so parameter,
+   * return, field, and alias types become dependencies without mistaking names
+   * or identifiers in bodies/initializers for types.
+   */
+  private extractDTypeRefs(node: SyntaxNode, nodeId: string): void {
+    const seen = new Set<string>();
+    const stop = new Set([
+      'function_body',
+      'aggregate_body',
+      'block_statement',
+      'declarator',
+      'manifest_declarator',
+      'template_parameters',
+    ]);
+
+    const emitType = (typeNode: SyntaxNode): void => {
+      const visit = (current: SyntaxNode): void => {
+        if (current.type === 'identifier') {
+          const name = getNodeText(current, this.source);
+          if (
+            !this.BUILTIN_TYPES.has(name) &&
+            !D_BUILTIN_TYPES.has(name) &&
+            !seen.has(name)
+          ) {
+            seen.add(name);
+            this.unresolvedReferences.push({
+              fromNodeId: nodeId,
+              referenceName: name,
+              referenceKind: 'references',
+              line: current.startPosition.row + 1,
+              column: current.startPosition.column,
+            });
+          }
+          return;
+        }
+        for (const child of current.namedChildren) visit(child);
+      };
+      visit(typeNode);
+    };
+
+    const walk = (current: SyntaxNode): void => {
+      if (current !== node && stop.has(current.type)) return;
+      if (current.type === 'type') {
+        emitType(current);
+        return;
+      }
+      for (const child of current.namedChildren) walk(child);
+    };
+    walk(node);
   }
 
   /**

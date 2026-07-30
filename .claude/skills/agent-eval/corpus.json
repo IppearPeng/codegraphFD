@@ -229,6 +229,29 @@
       "question": "How does gRPC dispatch an incoming RPC to its handler?"
     }
   ],
+  "D": [
+    {
+      "name": "dcompute",
+      "repo": "https://github.com/libmir/dcompute",
+      "size": "Small",
+      "files": "~52",
+      "question": "How does a DCompute CUDA kernel invocation travel from the high-level queue API to program loading and the low-level CUDA launch path?"
+    },
+    {
+      "name": "serve-d",
+      "repo": "https://github.com/Pure-D/serve-d",
+      "size": "Medium",
+      "files": "~128",
+      "question": "How does an LSP textDocument/completion request flow from serve-d's protocol router through workspace selection to the D completion providers?"
+    },
+    {
+      "name": "dmd",
+      "repo": "https://github.com/dlang/dmd",
+      "size": "Large",
+      "files": "~5504",
+      "question": "How does DMD take a source module from parsing through semantic analysis to object-code generation? Trace the major cross-file stages and their handoffs."
+    }
+  ],
   "Dart": [
     {
       "name": "flutter",

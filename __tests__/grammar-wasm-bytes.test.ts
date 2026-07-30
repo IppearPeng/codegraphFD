@@ -8,6 +8,7 @@
  * would, and that web-tree-sitter genuinely accepts the bytes.
  */
 import { describe, it, expect } from 'vitest';
+import { createHash } from 'node:crypto';
 import { Parser, Language as WasmLanguage } from 'web-tree-sitter';
 import { readGrammarWasmBytes } from '../src/extraction/grammars';
 
@@ -39,5 +40,21 @@ describe('readGrammarWasmBytes', () => {
     const tree = parser.parse('function hello() { return 1; }');
     expect(tree!.rootNode.hasError).toBe(false);
     expect(tree!.rootNode.toString()).toContain('function_declaration');
+  });
+
+  it('loads the pinned vendored D grammar bytes', async () => {
+    await Parser.init();
+    const bytes = await readGrammarWasmBytes(['d']);
+    expect(bytes.d).toBeInstanceOf(Uint8Array);
+    expect(
+      createHash('sha256').update(bytes.d).digest('hex')
+    ).toBe('c5811b0fbefd94ec8f95d78e69ebae4dc7583e75cd34ac16b9600428da80f818');
+
+    const language = await WasmLanguage.load(bytes.d);
+    const parser = new Parser();
+    parser.setLanguage(language);
+    const tree = parser.parse('module app; class Service { void run() {} }');
+    expect(tree!.rootNode.hasError).toBe(false);
+    expect(tree!.rootNode.toString()).toContain('class_declaration');
   });
 });

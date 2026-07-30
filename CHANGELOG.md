@@ -9,6 +9,9 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- CodeGraph now indexes **D** (`.d`, `.di`) — modules and imports (including aliases and selective bindings), functions, classes/interfaces/structs/unions, templates and mixin templates, constructors/destructors, enums, aliases, variables/constants, type references, inheritance, calls, and instantiation edges. D module imports resolve across conventional and custom source roots, with deterministic `.d` / `.di` / `package.d` / `package.di` lookup.
 
 ## [1.5.0] - 2026-07-21
 

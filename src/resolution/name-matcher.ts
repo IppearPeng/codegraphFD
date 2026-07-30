@@ -1328,6 +1328,11 @@ function buildLocalReceiverTypePatterns(language: Language, r: string): RegExp[]
         // (#1125). Mirrors Java/C#.
         new RegExp(`\\b([A-Z][\\w.]*)\\s+${r}\\b\\s*[=;,)]`), // Logger lg = ...  / param
       ];
+    case 'd':
+      return [
+        new RegExp(`\\b${r}\\b\\s*=\\s*new\\s+([A-Za-z_][\\w.]*)`), // auto lg = new Logger()
+        new RegExp(`\\b([A-Z][\\w.]*)\\s+${r}\\b\\s*[=;,)]`), // Logger lg; / typed param
+      ];
     case 'php':
       return [
         new RegExp(`\\$?${r}\\b\\s*=\\s*new\\s+([A-Za-z_\\\\][\\w\\\\]*)`), // $lg = new Logger()

@@ -163,6 +163,8 @@ const DEFAULT_IGNORE_DIRS: ReadonlySet<string> = new Set([
   '.ipynb_checkpoints', '.eggs',
   // Rust / JVM (Maven, Gradle, Scala)
   'target', '.gradle',
+  // DUB package/build cache
+  '.dub',
   // .NET
   'obj',
   // Vendored deps (Go, PHP/Composer, Ruby/Bundler)
